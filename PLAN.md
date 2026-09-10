@@ -35,6 +35,10 @@ ris_noma_sim/
     max_sumrate.py           # alternating optimization / coordinate ascent
     fairness_aware.py       # alpha*Rsum + beta*Jain
     power_allocation.py      # NOMA power split optimizer (closed-form + CVXPY fallback)
+    objective.py              # shared evaluate(channels, theta, config) -> sum-rate/user-rates,
+                              # used by max_sumrate.py/fairness_aware.py's search loop AND later
+                              # reused as-is by network/controller.py's final metrics pass, so the
+                              # two never compute rates via separate code paths
   network/
     topology.py              # BS/RIS/user placement, distances
     mobility.py                # random-waypoint mobility model
@@ -114,6 +118,7 @@ mode exposes an editable seed (default fixed) for reproducible screenshots.
 - h_RU,k (N x 1): RIS -> user k, same fading family.
 - h_BU,k (1 x M): direct BS -> user k; settable to exactly 0 via config flag `direct_link_blocked: bool` to force RIS-dependence for Experiment 1's "No RIS" baseline meaning "no direct link and no RIS help" vs "direct link only, no RIS".
 - Path loss: L(d) = (d / d0)^-path_loss_exponent, d0 = 1 m reference; applied as sqrt(L(d)) scaling on the corresponding small-scale fading coefficient.
+- Rician fading composition: `h = sqrt(K/(K+1))*los + sqrt(1/(K+1))*nlos`, `nlos ~ CN(0,1)`, `K` = linear Rician factor from `rician_k_factor` (dB). **The LOS component's phase must be drawn independently per element/link, fresh each trial** (`los = exp(j*U(0,2*pi))`, not a shared constant such as phase 0 for every element) -- since this simulator does not model a physical antenna-array steering vector, a shared/constant LOS phase across RIS elements is a modeling artifact that makes `theta=0` ("no RIS intelligence") accidentally near-optimal, defeating the entire premise of every RIS-optimization experiment. This was caught empirically during implementation (Milestone 2): with a constant LOS phase, the Fixed baseline outperformed Random RIS by ~5x on average in `test_ris_opt.py`'s statistical-ordering test, which should never happen.
 - Effective channel: h_k = h_BU,k + h_RU,k^H @ Theta @ H_BR, Theta = diag(exp(j*theta)).
 - Regenerated fresh every Monte-Carlo trial using the trial's `rng`; user positions/distances fixed per experiment sweep (only fading regenerates per trial) unless the experiment explicitly sweeps distance (Experiment 7) or mobility (Experiment 8).
 - **`n_ris == 0` (no-RIS baseline, used only by Experiment 1) is an explicit,
@@ -270,12 +275,18 @@ Interface: `allocate(channel_gains: np.ndarray, config: SimConfig) -> np.ndarray
 - `inverse_gain`: a_k proportional to 1/|h_k|^2, normalized to sum 1.
 - `fair_constrained`: maximize sum-rate s.t. each user's rate >= min-rate QoS
   threshold (`outage_rate_threshold_bps_hz`) and the a_k ordering constraint.
-  **2-user closed form**: for position-1 (strong) and position-2 (weak) users,
-  the QoS floor on the weak user pins its minimum power fraction
-  `a_2_min = (2^R_th - 1) * N0 / (P*|h_2|^2)` (weak user sees full interference
-  from the strong user regardless of epsilon per Sec 6.3, so no other user's
-  power affects its own SINR denominator); set `a_2 = max(a_2_min, a_2_min)`
-  clipped to `[0.5, 1]` to preserve the a_1<=a_2 ordering, `a_1 = 1 - a_2`.
+  **2-user closed form**: for position-0 (strong) and position-1 (weak) users
+  (0-indexed, matching Sec 6.3's SINR formula), the weak user's SINR is
+  `SINR_1 = a_1*P*g_1 / (P*g_1*a_0 + N0)` -- note this genuinely depends on
+  `a_0` (the stronger user's power), since the weak user suffers *full*
+  uncancelled interference from the stronger user's lower-power signal per
+  Sec 6.3; an earlier draft of this closed form incorrectly dropped that
+  dependency. Substituting `a_0 = 1 - a_1` and solving the QoS floor
+  `SINR_1 >= target` where `target = 2^R_th - 1` for `a_1` gives:
+  `a_1_min = target*(P*g_1 + N0) / (P*g_1*(1+target))`. Set
+  `a_1 = clip(a_1_min, 0.5, 1.0)` to preserve the `a_0<=a_1` ordering
+  (giving the weak user exactly its QoS-floor power, maximizing the strong
+  user's remaining share and hence sum-rate), `a_0 = 1 - a_1`.
   **K>2 case, solved via CVXPY through Successive Convex Approximation (SCA)**:
   outer loop (max 10 iterations or until a_k changes by <1e-4) over convex
   subproblems. In each outer iteration, treat every OTHER user's power
@@ -301,22 +312,41 @@ Interface: `allocate(channel_gains: np.ndarray, config: SimConfig) -> np.ndarray
   the power-ordering constraint (weaker gets more power) and sum-to-1.
 
 ## 7. Layer 5 — RIS optimization algorithms (optimization/*.py)
-Common interface: `optimize(channels: ChannelSet, config: SimConfig) -> np.ndarray`
-returning the (already-quantized per Sec.5) theta vector of length N.
+Common interface: `optimize(channels: ChannelSet, config: SimConfig, rng: np.random.Generator) -> np.ndarray`
+returning the (already-quantized per Sec.5) theta vector of length N. `rng` is
+part of every algorithm's signature for interface consistency; Fixed and
+Max-SNR are deterministic and ignore it, Random uses it directly, and
+Max-Sum-Rate/Fairness-aware use it for their random-restart seeds (below).
 
 1. **Random**: `theta = rng.uniform(0, 2*pi, size=N)`, then quantize.
 2. **Fixed**: `theta = zeros(N)` (baseline, no intelligence).
 3. **Max-SNR**: objective = maximize the **sum of effective-channel gains
    across all users** (well-defined default for multi-user case, resolving the
    "single reference user" ambiguity): for each element n,
-   `theta_n* = -angle( sum_k h_RU,k,n * H_BR,n )` — phase-aligns element n to
-   the average/composite user channel rather than one arbitrarily chosen user.
-   Document this explicitly as the default; do not offer a second variant.
-4. **Max-Sum-Rate**: coordinate ascent — initialize from Max-SNR solution, then
-   iterate element-by-element: for each element n, evaluate sum-rate (using
-   current power allocation, recomputed via the configured `power_algo` each
-   full sweep) at a grid of candidate phases and keep the best; repeat for up
-   to `max_iters=5` full sweeps or until sum-rate improvement < 1e-3.
+   `theta_n* = -angle( sum_k conj(h_RU,k,n) * H_BR,n )` — note the conjugate
+   on `h_RU,k,n`, required because Sec 4's effective-channel formula uses
+   `h_RU,k^H` (conjugate transpose), so the per-element contribution to `h_k`
+   is `conj(h_RU,k,n) * H_BR,n * exp(j*theta_n)`; phase-aligning without the
+   conjugate would align to the wrong term and not actually maximize
+   coherent combining. This phase-aligns element n to the composite
+   (summed) user channel rather than one arbitrarily chosen user. Document
+   this explicitly as the default; do not offer a second variant.
+4. **Max-Sum-Rate**: coordinate ascent — for each element n, evaluate sum-rate
+   (using current power allocation, recomputed via the configured
+   `power_algo` each full sweep) at a grid of candidate phases and keep the
+   best; repeat for up to `max_iters=5` full sweeps or until sum-rate
+   improvement < 1e-3. **Multi-start**: single-coordinate greedy ascent can
+   get stuck in a local optimum that only a simultaneous multi-element flip
+   would escape (measured empirically during implementation: a single run
+   from the Max-SNR seed alone landed 23% below the true optimum on a small
+   N=5, 1-bit test case, violating this section's own "near-optimal" claim
+   below). To make that claim actually hold, run coordinate ascent from
+   **4 starting points** -- the Max-SNR solution, plus 3 random-phase
+   starts drawn the same way as the Random algorithm (using the same `rng`
+   passed to `optimize`) -- and return the single best-scoring result across
+   all 4 runs. This raises the cost to `4x` a single run's evaluate() calls,
+   which is acceptable given N<=256 and this is an offline/experiment-time
+   cost, not a per-dashboard-interaction one for large sweeps (see Sec 12).
    **Candidate grid depends on `ris_bits`**: if `ris_bits` is a finite bit
    depth, the candidates are exactly the `2**ris_bits` quantized phase levels
    from `quantize_phase`'s alphabet (so search and final output already agree
@@ -330,7 +360,8 @@ returning the (already-quantized per Sec.5) theta vector of length N.
    for every bit depth, including `ris_bits=1`. `test_ris_opt.py` includes a
    case at `ris_bits=1` asserting Max-Sum-Rate sum-rate >= Random sum-rate
    (averaged over >=200 seeds).
-5. **Fairness-aware**: same coordinate-ascent scheme as (4) but objective is
+5. **Fairness-aware**: same multi-start coordinate-ascent scheme as (4)
+   (Max-SNR seed + 3 random starts, best-of-4) but objective is
    `alpha * Rsum + beta * JainIndex(rates)` per candidate phase evaluation.
    `alpha`, `beta` from config (default 0.5/0.5).
 
@@ -441,7 +472,7 @@ Explicit mapping to spec:
 - `test_pairing.py`: strong-weak pairing correctness for various n_users/cluster_size.
 - `test_sic.py`: 2-user closed-form SINR check against hand-derived values; epsilon=0 vs epsilon=1 boundary behavior.
 - `test_metrics.py`: Jain fairness known cases (equal rates -> J=1), BER analytic vs. bit-level Monte-Carlo cross-check.
-- `test_ris_opt.py`: statistical ordering Fixed <= Random <= Max-SNR <= Max-Sum-Rate (averaged over >=200 seeds, with tolerance); exhaustive-search cross-check for N<=8.
+- `test_ris_opt.py`: statistical ordering `max(Fixed, Random) <= Max-SNR <= Max-Sum-Rate` (averaged over many seeds, with tolerance) -- **not** a strict `Fixed <= Random` ordering: with the per-element-random-LOS-phase channel model (Sec 4), Fixed (theta=0) and Random are both "non-intelligent" baselines with statistically equal expected performance (confirmed empirically during implementation: paired difference over 200 trials had mean/std ratio near zero, i.e. indistinguishable from no systematic difference), so asserting one beats the other is not a physically grounded claim and the test must not require it; exhaustive-search cross-check for N<=8.
 - `test_controller.py`: reconfiguration trigger fires under a forced SINR-drop scenario and not otherwise; periodic mode fires at expected cadence.
 - `test_config.py`: SimConfig validation (a_k sums, valid ranges) — validation performed at controller construction time via `__post_init__` checks, raising `ValueError` with a clear message on invalid config (e.g., n_users<2, ris_bits not in allowed set).
 

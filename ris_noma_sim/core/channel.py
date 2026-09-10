@@ -37,14 +37,29 @@ def _path_loss(distance_m: np.ndarray | float, path_loss_exponent: float) -> np.
 
 def _fading(shape: tuple[int, ...], channel_type: str, rician_k_factor_db: float, rng: np.random.Generator) -> np.ndarray:
     """Unit-average-power small-scale fading, CN(0,1) (Rayleigh) or
-    Rician with the given K-factor. LOS component is a fixed unit-magnitude
-    deterministic term (phase 0); NLOS component is CN(0,1)."""
+    Rician with the given K-factor.
+
+    The LOS component's phase varies per element/link (drawn fresh each
+    trial from `rng`), NOT a shared constant phase. This simulator does not
+    model a physical antenna-array steering vector (element spacing, carrier
+    wavelength, angle of arrival are out of scope), so a random per-element
+    LOS phase is the standard simplified stand-in for "the deterministic
+    component's phase depends on unmodeled array/link geometry". Giving
+    every element an IDENTICAL LOS phase (e.g. always 0) would silently make
+    theta=0 ("no RIS intelligence") a pre-aligned, near-optimal
+    configuration purely as a modeling artifact, defeating the premise of
+    every RIS-optimization experiment -- this was caught by
+    `test_ris_opt.py::test_statistical_ordering_...` during implementation
+    (Fixed was beating Random by 5x on average) and is exactly the failure
+    mode this docstring warns against.
+    """
     nlos = (rng.standard_normal(shape) + 1j * rng.standard_normal(shape)) / np.sqrt(2.0)
     if channel_type == "rayleigh":
         return nlos
     if channel_type == "rician":
         k_linear = 10.0 ** (rician_k_factor_db / 10.0)
-        los = np.ones(shape, dtype=complex)
+        los_phase = rng.uniform(0, 2 * np.pi, size=shape)
+        los = np.exp(1j * los_phase)
         return np.sqrt(k_linear / (k_linear + 1.0)) * los + np.sqrt(1.0 / (k_linear + 1.0)) * nlos
     raise ValueError(f"unknown channel_type: {channel_type!r}")
 
