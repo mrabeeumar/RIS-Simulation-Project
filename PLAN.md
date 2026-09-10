@@ -372,35 +372,64 @@ near-optimal (within 1%) sum-rate as brute force.
 ## 8. Layer 6 — Network Controller (network/controller.py)
 ```python
 class NetworkController:
-    def __init__(self, config: SimConfig, rng: np.random.Generator): ...
+    def __init__(self, config: SimConfig, rng: np.random.Generator):
+        """Generates the topology once (Sec 4) -- fixed for the controller's
+        lifetime, matching "user positions/distances fixed per experiment
+        sweep, only fading regenerates per trial" (Sec 4)."""
     def simulate_batch(self) -> BatchResult:
         """Stateless Monte-Carlo batch used by experiments 1-7 and dashboard
-        'Live' tab: for n_trials, regenerate channel -> run ris_algo.optimize
-        -> run pairing -> run power_algo.allocate -> run sic SINR/rate ->
-        compute metrics; return averaged + per-trial results."""
-    def step(self, dt_s: float) -> ControllerState:
-        """Stateful single time-step used by Experiment 8: advances user
-        positions via mobility model, regenerates channel at new positions,
-        evaluates maybe_reconfigure(), re-runs RIS optimization only if
-        triggered, recomputes metrics; appends to history log."""
-    def maybe_reconfigure(self, state: ControllerState) -> bool: ...
+        'Live' tab: for n_trials, regenerate channel fading at the fixed
+        topology -> run ris_algo.optimize -> evaluate() (pairing -> power
+        allocation -> SIC -> rates, Sec 2's objective.py) -> average metrics
+        (sum-rate, avg user rate, Jain fairness, outage, EE, BER) over trials."""
+    def init_dynamic(self) -> ControllerState:
+        """Experiment 8 only: initializes the mobility model and an initial
+        RIS configuration at t=0 (always "reconfigures" at t=0, there being
+        no prior configuration to compare against)."""
+    def step(self) -> ControllerState:
+        """Experiment 8 only, called after init_dynamic(): advances user
+        positions one config.mobility_dt_s step via the mobility model,
+        regenerates channel at the new positions, evaluates the *current*
+        theta there first, calls maybe_reconfigure() on that observation, and
+        only re-runs RIS optimization if triggered."""
+    def maybe_reconfigure(self, current_sinr: np.ndarray, current_time_s: float) -> tuple[bool, str | None]:
+        """Returns (should_reconfigure, cause) where cause is "periodic",
+        "sinr_drop", or None."""
 ```
 `ReconfigTrigger` (config fields `reconfig_mode`, `reconfig_sinr_drop_db`,
 `reconfig_period_s`): supported modes:
-- `"periodic"`: reconfigure every `reconfig_period_s` seconds regardless of state.
+- `"periodic"`: reconfigure every `reconfig_period_s` seconds regardless of
+  state. The elapsed-time comparison must use a small epsilon tolerance
+  (`elapsed >= reconfig_period_s - 1e-9`), not a bare `>=`: repeated
+  `time_s += mobility_dt_s` float accumulation (e.g. 0.1+0.1+0.1 != 0.3
+  exactly in binary floating point) can otherwise land just under the
+  threshold and make the trigger fire one step late intermittently --
+  observed empirically during implementation (Milestone 3).
 - `"sinr_drop"`: reconfigure when any user's instantaneous SINR has dropped more
   than `reconfig_sinr_drop_db` dB relative to the SINR measured at the last
   reconfiguration.
 Default mode = `"sinr_drop"` with `reconfig_sinr_drop_db = 3.0`.
 
-Mobility model (network/mobility.py): random waypoint — each user picks a
-uniform-random destination within the cell, moves at constant speed
-`user_speed_mps` (config, default 1.0 m/s pedestrian), `dt_s` default 0.1 s;
-on reaching destination, picks a new random destination; reflects at cell
-boundary. `step()` is called in a loop by `experiments/exp8_mobility.py` for a
-configured `sim_duration_s`, logging (time, per-user SINR, reconfiguration
-events with cause) for the required "SINR-over-time with reconfiguration
-markers" plot.
+Mobility model (network/mobility.py): random waypoint. **The "cell" is the
+same disk used by the default topology (Sec 4): centered at the RIS position,
+radius `d_max_m`.** Each user picks a uniform-random destination within this
+disk (distance in `[0, d_max_m]` from the RIS, angle in `[0, 2*pi)`), moves in
+a straight line toward it at constant speed `user_speed_mps` (config, default
+1.0 m/s pedestrian) with step size `user_speed_mps * mobility_dt_s` per
+`step()` call (`mobility_dt_s` default 0.1 s). Because every destination is
+inside the disk and the user always moves directly toward its current target,
+the straight-line path never exits the disk, so no boundary-reflection case
+can actually arise -- "reflects at cell boundary" in an earlier draft of this
+section was based on a generic RWP description and is not needed for this
+specific cell shape; it is dropped. On arrival at (or within one step's
+distance of) the target, the position snaps exactly to the target and a new
+uniform-random destination is drawn for the *next* step (any leftover
+distance in the arriving step is discarded rather than applied toward the new
+target, a negligible simplification at `dt_s=0.1s`/`v=1 m/s` step sizes of
+~0.1 m against a >=5 m cell). `step()` is called in a loop by
+`experiments/exp8_mobility.py` for a configured `mobility_sim_duration_s`,
+logging (time, per-user SINR, reconfiguration events with cause) for the
+required "SINR-over-time with reconfiguration markers" plot.
 
 ## 9. Layer 4 — BER (core/metrics.py)
 Default modulation = BPSK: `BER_k = 0.5 * erfc(sqrt(SINR_k))` (scipy.special.erfc).
