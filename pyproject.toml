@@ -1,0 +1,2 @@
+[tool.pytest.ini_options]
+testpaths = ["ris_noma_sim/tests"]
