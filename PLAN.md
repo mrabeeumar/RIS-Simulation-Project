@@ -465,7 +465,10 @@ Explicit mapping to spec:
 3. exp3: sweep n_ris in [16,32,64,128,256].
 4. exp4: sweep n_users in [2,3,4,6,8,10], report sum-rate, avg per-user rate,
    Jain fairness, outage, EE (5 sub-plots or one grid figure).
-5. exp5: NOMA (cluster_size=2 or n_users) vs OMA baseline. OMA: each user gets
+5. exp5: uses `NetworkController.simulate_noma_vs_oma_batch()` (computes both
+   under identical per-trial channel/RIS realizations for a fair paired
+   comparison, rather than two separate `simulate_batch()` calls). NOMA
+   (cluster_size=2 or n_users) vs OMA baseline. OMA: each user gets
    an equal orthogonal time-slot fraction 1/n_users, full power in its own
    slot (no superposition, no SIC), rate
    `R_k^OMA = (1/n_users) * log2(1 + P*|h_k|^2/N0)`,

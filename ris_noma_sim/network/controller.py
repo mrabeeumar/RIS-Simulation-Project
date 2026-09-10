@@ -16,8 +16,9 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from ris_noma_sim.core.channel import generate_channels
-from ris_noma_sim.core.metrics import ber, energy_efficiency_bit_per_j, jain_fairness, outage_indicator
+from ris_noma_sim.core.channel import effective_channel, generate_channels
+from ris_noma_sim.core.metrics import ber, energy_efficiency_bit_per_j, jain_fairness, oma_sum_rate_bps_hz, outage_indicator
+from ris_noma_sim.core.sic import noise_power_w
 from ris_noma_sim.network import mobility
 from ris_noma_sim.network.topology import Topology, generate_topology
 from ris_noma_sim.optimization import fairness_aware, fixed_phase, max_snr, max_sumrate, random_phase
@@ -32,7 +33,7 @@ _RIS_ALGORITHMS = {
 }
 
 
-def _rates_to_sinr(rates_bps_hz: np.ndarray) -> np.ndarray:
+def rates_to_sinr(rates_bps_hz: np.ndarray) -> np.ndarray:
     """Invert R = log2(1+SINR): SINR = 2**R - 1. Exact and avoids threading
     a second SINR array through EvalResult."""
     return 2.0 ** rates_bps_hz - 1.0
@@ -108,7 +109,7 @@ class NetworkController:
             ee_vals.append(
                 energy_efficiency_bit_per_j(result.sum_rate_bps_hz, cfg.tx_power_w, cfg.p_bs_static_w, cfg.n_ris, cfg.p_element_w)
             )
-            sinr = _rates_to_sinr(result.user_rates_bps_hz)
+            sinr = rates_to_sinr(result.user_rates_bps_hz)
             ber_vals.append(float(np.mean(ber(sinr, cfg.modulation))))
 
         return BatchResult(
@@ -121,6 +122,27 @@ class NetworkController:
             per_trial_sum_rate_bps_hz=np.array(sum_rates),
         )
 
+    def simulate_noma_vs_oma_batch(self) -> tuple[float, float]:
+        """Experiment 5 only: average (NOMA sum-rate, OMA sum-rate) computed
+        under IDENTICAL per-trial channel/RIS realizations, for a fair
+        paired comparison (PLAN.md Sec 11 exp5). NOMA uses the normal
+        pipeline (evaluate()); OMA uses metrics.oma_sum_rate_bps_hz on the
+        same trial's post-RIS effective-channel gains."""
+        cfg = self.config
+        noma_rates, oma_rates = [], []
+        noise_w = noise_power_w(cfg.tx_power_w, cfg.snr_db)
+
+        for _ in range(cfg.n_trials):
+            channels = self._generate_channels(self.topology)
+            theta = self._ris_algo(channels, cfg, self.rng)
+            noma_result = evaluate(channels, theta, cfg)
+            noma_rates.append(noma_result.sum_rate_bps_hz)
+
+            gains = np.abs(effective_channel(channels, theta)[:, 0]) ** 2
+            oma_rates.append(oma_sum_rate_bps_hz(gains, cfg.tx_power_w, noise_w))
+
+        return float(np.mean(noma_rates)), float(np.mean(oma_rates))
+
     # ---- Stateful per-time-step pipeline (Experiment 8) ----
 
     def init_dynamic(self) -> ControllerState:
@@ -132,7 +154,7 @@ class NetworkController:
         result = evaluate(channels, theta, self.config)
 
         self._last_reconfig_time_s = 0.0
-        self._last_reconfig_sinr = _rates_to_sinr(result.user_rates_bps_hz)
+        self._last_reconfig_sinr = rates_to_sinr(result.user_rates_bps_hz)
         self._current_state = ControllerState(
             time_s=0.0,
             topology=self._mobility_state.topology,
@@ -181,7 +203,7 @@ class NetworkController:
         # Evaluate performance of the *current* theta at the new positions
         # first, since reconfiguration is a decision, not a foregone conclusion.
         result_current_theta = evaluate(channels, self._current_state.theta, self.config)
-        sinr_current = _rates_to_sinr(result_current_theta.user_rates_bps_hz)
+        sinr_current = rates_to_sinr(result_current_theta.user_rates_bps_hz)
 
         should_reconfig, cause = self.maybe_reconfigure(sinr_current, new_time_s)
 
@@ -189,7 +211,7 @@ class NetworkController:
             theta = self._ris_algo(channels, self.config, self.rng)
             result = evaluate(channels, theta, self.config)
             self._last_reconfig_time_s = new_time_s
-            self._last_reconfig_sinr = _rates_to_sinr(result.user_rates_bps_hz)
+            self._last_reconfig_sinr = rates_to_sinr(result.user_rates_bps_hz)
         else:
             theta = self._current_state.theta
             result = result_current_theta

@@ -34,6 +34,14 @@ def test_n_ris_zero_batch_runs():
     assert result.sum_rate_bps_hz >= 0
 
 
+def test_simulate_noma_vs_oma_batch_returns_two_nonneg_floats():
+    cfg = SimConfig(n_ris=16, n_users=2, cluster_size=2, n_trials=10, power_algo="inverse_gain", ris_algo="max_snr")
+    controller = NetworkController(cfg, np.random.default_rng(0))
+    noma_rate, oma_rate = controller.simulate_noma_vs_oma_batch()
+    assert noma_rate >= 0
+    assert oma_rate >= 0
+
+
 def test_init_dynamic_always_reconfigures_at_t0():
     cfg = SimConfig(n_ris=16, n_users=2, cluster_size=2, power_algo="inverse_gain")
     controller = NetworkController(cfg, np.random.default_rng(0))
