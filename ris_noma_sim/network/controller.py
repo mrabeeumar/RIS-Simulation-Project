@@ -48,6 +48,7 @@ class BatchResult:
     energy_efficiency_bit_per_j: float
     avg_ber: float
     per_trial_sum_rate_bps_hz: np.ndarray = field(default_factory=lambda: np.array([]))
+    avg_per_user_rate_bps_hz: np.ndarray = field(default_factory=lambda: np.array([]))  # length n_users, trial-averaged
 
 
 @dataclass
@@ -96,6 +97,7 @@ class NetworkController:
         cfg = self.config
         sum_rates, avg_user_rates, fairness_vals = [], [], []
         outages, ee_vals, ber_vals = [], [], []
+        per_user_rates = np.zeros(cfg.n_users)
 
         for _ in range(cfg.n_trials):
             channels = self._generate_channels(self.topology)
@@ -104,6 +106,7 @@ class NetworkController:
 
             sum_rates.append(result.sum_rate_bps_hz)
             avg_user_rates.append(float(np.mean(result.user_rates_bps_hz)))
+            per_user_rates += result.user_rates_bps_hz
             fairness_vals.append(jain_fairness(result.user_rates_bps_hz))
             outages.append(float(np.mean(outage_indicator(result.user_rates_bps_hz, cfg.outage_rate_threshold_bps_hz))))
             ee_vals.append(
@@ -120,6 +123,7 @@ class NetworkController:
             energy_efficiency_bit_per_j=float(np.mean(ee_vals)),
             avg_ber=float(np.mean(ber_vals)),
             per_trial_sum_rate_bps_hz=np.array(sum_rates),
+            avg_per_user_rate_bps_hz=per_user_rates / cfg.n_trials,
         )
 
     def simulate_noma_vs_oma_batch(self) -> tuple[float, float]:

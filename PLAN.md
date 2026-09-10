@@ -522,8 +522,8 @@ python -m venv .venv
 .venv\Scripts\activate          # Windows PowerShell: .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 pytest -q                        # run unit tests
-streamlit run dashboard/app.py   # launch dashboard
-python -m experiments.run_all    # regenerate all experiment CSVs/plots
+streamlit run ris_noma_sim/dashboard/app.py   # launch dashboard
+python -m ris_noma_sim.experiments.run_all    # regenerate all experiment CSVs/plots (add --quick for a fast smoke run)
 ```
 `requirements.txt` (pinned, minimum versions — exact pins finalized at repo
 init via `pip freeze` after first successful install):

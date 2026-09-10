@@ -16,6 +16,8 @@ def test_simulate_batch_returns_valid_ranges():
     assert 0.0 <= result.avg_ber <= 0.5 + 1e-9
     assert result.energy_efficiency_bit_per_j >= 0
     assert result.per_trial_sum_rate_bps_hz.shape == (20,)
+    assert result.avg_per_user_rate_bps_hz.shape == (2,)
+    assert np.all(result.avg_per_user_rate_bps_hz >= 0)
 
 
 def test_topology_fixed_for_controller_lifetime():
