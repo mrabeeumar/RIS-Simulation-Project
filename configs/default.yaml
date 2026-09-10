@@ -1,0 +1,38 @@
+# Reference copy of SimConfig's defaults (ris_noma_sim/core/config.py).
+# This file is documentation, not a loader input -- SimConfig is
+# constructed directly in Python by the dashboard and experiment scripts
+# (PLAN.md Sec 3: SimConfig is the single source of truth). Keep this file's
+# values in sync with core/config.py's field defaults if they ever change.
+
+n_ris: 64                          # RIS elements: 0 (no-RIS baseline) or 16-256
+n_users: 4                         # 2-10
+snr_db: 15.0                       # -10 to 30
+ris_bits: 2                        # 1, 2, 3, 4, or "continuous"
+ris_algo: max_sumrate              # random | fixed | max_snr | max_sumrate | fairness_aware
+power_algo: fair_constrained       # fixed | inverse_gain | fair_constrained | max_sumrate_qos
+channel_type: rician                # rayleigh | rician
+rician_k_factor: 5.0               # dB, used only if channel_type == rician
+path_loss_exponent: 2.0
+cluster_size: 2                    # NOMA pairing group size; == n_users means full-K NOMA
+sic_epsilon: 0.0                   # 0 = perfect SIC, 0.05 / 0.10 / 0.20 = imperfect
+modulation: bpsk                   # bpsk | qpsk
+outage_rate_threshold_bps_hz: 0.5
+fairness_alpha: 0.5                # for fairness_aware RIS algo
+fairness_beta: 0.5
+p_element_w: 0.005                 # RIS element static power (5 mW, literature-typical)
+p_bs_static_w: 1.0                 # BS circuit static power
+user_distances_m: null             # null => drawn from topology defaults
+tx_power_w: 1.0                    # P, fixed transmit power in Watts
+direct_link_blocked: false
+ris_offset_m: 10.0                 # BS-to-RIS distance
+d_min_m: 5.0                       # min RIS-to-user distance for random placement
+d_max_m: 15.0                      # max RIS-to-user distance (kept non-degenerate, see PLAN.md Sec 4)
+power_alloc_fixed_weak: 0.7        # a_weak for power_algo=fixed (2-user case)
+reconfig_mode: sinr_drop           # sinr_drop | periodic
+reconfig_sinr_drop_db: 3.0
+reconfig_period_s: 5.0
+user_speed_mps: 1.0                # mobility model speed (Experiment 8 only)
+mobility_dt_s: 0.1
+mobility_sim_duration_s: 60.0
+n_trials: 500
+seed: 42
