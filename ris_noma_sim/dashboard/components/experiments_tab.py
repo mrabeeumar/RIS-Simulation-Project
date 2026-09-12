@@ -39,6 +39,14 @@ def render_experiments_tab() -> None:
         png_path = RESULTS_DIR / png_name
         if png_path.exists():
             st.image(str(png_path), width="stretch")
+            with png_path.open("rb") as f:
+                st.download_button(
+                    f"Download {png_name}",
+                    data=f.read(),
+                    file_name=png_name,
+                    mime="image/png",
+                    key=f"download_{png_name}",
+                )
 
     if csv_path.exists():
         df = pd.read_csv(csv_path)

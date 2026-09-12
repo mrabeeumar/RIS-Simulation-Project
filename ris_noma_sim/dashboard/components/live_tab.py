@@ -3,10 +3,12 @@ the full frozen SimConfig. See PLAN.md Section 12."""
 
 from __future__ import annotations
 
+import matplotlib.pyplot as plt
 import numpy as np
 import streamlit as st
 
 from ris_noma_sim.core.config import SimConfig
+from ris_noma_sim.dashboard.components.plot_utils import figure_download_button
 from ris_noma_sim.dashboard.components.topology_plot import render_topology_figure
 from ris_noma_sim.network.controller import BatchResult, NetworkController
 
@@ -64,7 +66,10 @@ def render_live_tab(config: SimConfig | None) -> None:
     col_topo, col_metrics = st.columns([1, 1.4])
 
     with col_topo:
-        st.pyplot(render_topology_figure(topology), clear_figure=True)
+        topology_fig = render_topology_figure(topology)
+        st.pyplot(topology_fig, clear_figure=False)
+        figure_download_button(topology_fig, filename="topology.png", key="download_topology")
+        plt.close(topology_fig)
 
     with col_metrics:
         n = last_config.n_trials
@@ -84,8 +89,6 @@ def render_live_tab(config: SimConfig | None) -> None:
         )
 
     st.subheader("Per-User Rate")
-    import matplotlib.pyplot as plt
-
     fig, ax = plt.subplots(figsize=(8, 3))
     users = [f"U{i+1}" for i in range(last_config.n_users)]
     ax.bar(users, result.avg_per_user_rate_bps_hz, color="#1f77b4")
@@ -93,4 +96,6 @@ def render_live_tab(config: SimConfig | None) -> None:
     ax.set_title(f"Average Per-User Rate (n_trials={n})")
     ax.grid(True, alpha=0.3, axis="y")
     fig.tight_layout()
-    st.pyplot(fig, clear_figure=True)
+    st.pyplot(fig, clear_figure=False)
+    figure_download_button(fig, filename="per_user_rate.png", key="download_per_user_rate")
+    plt.close(fig)
