@@ -18,13 +18,14 @@ st.set_page_config(
 )
 
 # Highlight the collapsed-sidebar arrow (data-testid confirmed against the
-# installed streamlit==1.63.0 frontend bundle) using the app's existing
-# accent color so it's easy to spot when the sidebar has been collapsed.
+# installed streamlit==1.63.0 frontend bundle) using the same red as the
+# "Run Simulation" primary button (Streamlit's default primaryColor) so
+# it's easy to spot when the sidebar has been collapsed.
 st.markdown(
     """
     <style>
     [data-testid="stExpandSidebarButton"] {
-        background-color: #1f77b4;
+        background-color: #FF4B4B;
         border-radius: 6px;
     }
     [data-testid="stExpandSidebarButton"] svg {
@@ -32,7 +33,7 @@ st.markdown(
         fill: white;
     }
     [data-testid="stExpandSidebarButton"]:hover {
-        background-color: #14547d;
+        background-color: #E03C3C;
     }
     </style>
     """,
