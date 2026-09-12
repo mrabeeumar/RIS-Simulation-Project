@@ -16,6 +16,29 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# Highlight the collapsed-sidebar arrow (data-testid confirmed against the
+# installed streamlit==1.63.0 frontend bundle) using the app's existing
+# accent color so it's easy to spot when the sidebar has been collapsed.
+st.markdown(
+    """
+    <style>
+    [data-testid="stExpandSidebarButton"] {
+        background-color: #1f77b4;
+        border-radius: 6px;
+    }
+    [data-testid="stExpandSidebarButton"] svg {
+        color: white;
+        fill: white;
+    }
+    [data-testid="stExpandSidebarButton"]:hover {
+        background-color: #14547d;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 st.title("RIS-Assisted NOMA Communication Simulator")
 st.caption("BS -> RIS -> Users | NOMA superposition + SIC | RIS phase optimization")
 
