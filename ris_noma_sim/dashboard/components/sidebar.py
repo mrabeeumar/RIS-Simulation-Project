@@ -2,18 +2,118 @@
 
 from __future__ import annotations
 
+import json
+from dataclasses import asdict
+
 import streamlit as st
 
 from ris_noma_sim.core.config import SimConfig
 
+# Defaults for every sidebar-exposed control, keyed by widget session-state
+# key. Used by the "Reset to Defaults" button and as the widgets' initial
+# values. Kept separate from SimConfig's own dataclass defaults because a
+# couple of controls intentionally diverge (e.g. live_n_trials=100 for
+# dashboard responsiveness vs. SimConfig's n_trials=500 for experiments).
+_DEFAULTS: dict[str, object] = {
+    "sb_n_ris": 64,
+    "sb_n_users": 4,
+    "sb_snr_db": 15.0,
+    "sb_ris_bits_label": "2-bit",
+    "sb_ris_algo": "max_sumrate",
+    "sb_power_algo": "fair_constrained",
+    "sb_channel_type": "rician",
+    "sb_rician_k_factor": 5.0,
+    "sb_d_max_m": 15.0,
+    "sb_sic_epsilon": 0.0,
+    "sb_cluster_size": 2,
+    "sb_modulation": "bpsk",
+    "sb_outage_threshold": 0.5,
+    "sb_live_n_trials": 100,
+    "sb_seed": 42,
+}
+
+_RIS_BITS_LABEL_TO_VALUE = {"1-bit": 1, "2-bit": 2, "3-bit": 3, "Continuous": "continuous"}
+_RIS_BITS_VALUE_TO_LABEL = {v: k for k, v in _RIS_BITS_LABEL_TO_VALUE.items()}
+
+# Maps a SimConfig field name (as it appears in an exported/imported JSON
+# config) to its sidebar widget's session-state key, plus an optional
+# converter from the raw field value to the widget's stored value.
+_IMPORT_FIELD_MAP: dict[str, tuple[str, object]] = {
+    "n_ris": ("sb_n_ris", None),
+    "n_users": ("sb_n_users", None),
+    "snr_db": ("sb_snr_db", None),
+    "ris_bits": ("sb_ris_bits_label", lambda v: _RIS_BITS_VALUE_TO_LABEL.get(v)),
+    "ris_algo": ("sb_ris_algo", None),
+    "power_algo": ("sb_power_algo", None),
+    "channel_type": ("sb_channel_type", None),
+    "rician_k_factor": ("sb_rician_k_factor", None),
+    "d_max_m": ("sb_d_max_m", None),
+    "sic_epsilon": ("sb_sic_epsilon", None),
+    "cluster_size": ("sb_cluster_size", None),
+    "modulation": ("sb_modulation", None),
+    "outage_rate_threshold_bps_hz": ("sb_outage_threshold", None),
+    "n_trials": ("sb_live_n_trials", lambda v: min(300, max(20, int(v)))),
+    "seed": ("sb_seed", lambda v: min(10_000, max(0, int(v)))),
+}
+
+
+def _apply_loaded_config(data: dict) -> list[str]:
+    """Push values from an imported config dict into the sidebar widgets'
+    session state (must run before those widgets are instantiated). Returns
+    the list of field names that were skipped (missing or invalid)."""
+    skipped = []
+    for field_name, (widget_key, convert) in _IMPORT_FIELD_MAP.items():
+        if field_name not in data:
+            continue
+        raw_value = data[field_name]
+        value = convert(raw_value) if convert else raw_value
+        if value is None:
+            skipped.append(field_name)
+            continue
+        st.session_state[widget_key] = value
+    # cluster_size must be one of [2, n_users]; clamp after n_users is applied.
+    n_users = st.session_state.get("sb_n_users", _DEFAULTS["sb_n_users"])
+    if st.session_state.get("sb_cluster_size") not in (2, n_users):
+        st.session_state["sb_cluster_size"] = 2
+    return skipped
+
 
 def build_sidebar() -> SimConfig | None:
+    # Seed session state before any widget is instantiated. A widget must
+    # not be given both `key=` and `value=`/`index=` when the key is already
+    # present in session state (Streamlit warns and ignores the latter), so
+    # every default lives here instead of being passed to the widgets below.
+    for _key, _value in _DEFAULTS.items():
+        st.session_state.setdefault(_key, _value)
+
     st.sidebar.header("RIS-NOMA Simulator Controls")
+
+    with st.sidebar.expander("Load config"):
+        uploaded = st.file_uploader("Load config (JSON)", type=["json"], key="sb_config_upload")
+        if uploaded is not None:
+            file_id = f"{uploaded.name}:{uploaded.size}"
+            if st.session_state.get("_sb_last_loaded_id") != file_id:
+                try:
+                    data = json.loads(uploaded.getvalue().decode("utf-8"))
+                    skipped = _apply_loaded_config(data)
+                    st.session_state["_sb_last_loaded_id"] = file_id
+                    if skipped:
+                        st.warning(f"Loaded config, but couldn't apply: {', '.join(skipped)}")
+                    else:
+                        st.success("Config loaded.")
+                except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                    st.error(f"Could not read config file: {exc}")
+        st.caption("Loading applies only to the sidebar-exposed fields below.")
+
+    if st.sidebar.button("Reset to Defaults", use_container_width=True):
+        for key, value in _DEFAULTS.items():
+            st.session_state[key] = value
+        st.rerun()
 
     n_ris = st.sidebar.select_slider(
         "Number of RIS elements",
         options=[16, 32, 64, 128, 256],
-        value=64,
+        key="sb_n_ris",
         help=(
             "Number of reconfigurable reflecting elements on the RIS surface. "
             "**Increase**: stronger beamforming gain, higher SNR/rate and better "
@@ -27,7 +127,7 @@ def build_sidebar() -> SimConfig | None:
         "Number of users",
         min_value=2,
         max_value=10,
-        value=4,
+        key="sb_n_users",
         help=(
             "Number of users served by the base station via NOMA. "
             "**Increase**: more users share the same time/frequency resource, "
@@ -41,7 +141,7 @@ def build_sidebar() -> SimConfig | None:
         "SNR (dB)",
         min_value=-10.0,
         max_value=30.0,
-        value=15.0,
+        key="sb_snr_db",
         step=1.0,
         help=(
             "Transmit SNR: the ratio of transmit power to noise power, in dB "
@@ -55,7 +155,7 @@ def build_sidebar() -> SimConfig | None:
     ris_bits_label = st.sidebar.selectbox(
         "RIS phase resolution",
         ["1-bit", "2-bit", "3-bit", "Continuous"],
-        index=1,
+        key="sb_ris_bits_label",
         help=(
             "Number of discrete phase-shift states each RIS element can take "
             "(1-bit = 2 states, 2-bit = 4, 3-bit = 8, Continuous = unlimited). "
@@ -67,7 +167,7 @@ def build_sidebar() -> SimConfig | None:
             "roughest approximation."
         ),
     )
-    ris_bits = {"1-bit": 1, "2-bit": 2, "3-bit": 3, "Continuous": "continuous"}[ris_bits_label]
+    ris_bits = _RIS_BITS_LABEL_TO_VALUE[ris_bits_label]
 
     ris_algo = st.sidebar.selectbox(
         "RIS algorithm",
@@ -76,7 +176,7 @@ def build_sidebar() -> SimConfig | None:
             "max_sumrate": "Max Sum Rate", "fairness_aware": "Fairness-Aware",
             "max_snr": "Max-SNR", "random": "Random", "fixed": "Fixed",
         }[a],
-        index=0,
+        key="sb_ris_algo",
         help=(
             "Objective the RIS phase-shift optimizer targets. **Max Sum Rate** "
             "maximizes total throughput (can favor already-strong users). "
@@ -95,7 +195,7 @@ def build_sidebar() -> SimConfig | None:
             "fair_constrained": "QoS-Fair (SCA)", "inverse_gain": "Inverse-Gain",
             "fixed": "Fixed Split", "max_sumrate_qos": "Max Sum-Rate",
         }[a],
-        index=0,
+        key="sb_power_algo",
         help=(
             "How transmit power is split between the superposed users in each "
             "NOMA cluster. **QoS-Fair (SCA)** solves for the split that meets "
@@ -111,6 +211,7 @@ def build_sidebar() -> SimConfig | None:
         "Channel condition",
         ["rician", "rayleigh"],
         format_func=str.capitalize,
+        key="sb_channel_type",
         help=(
             "Small-scale fading model for the wireless links. **Rician** "
             "assumes a dominant line-of-sight path plus scattered multipath "
@@ -121,13 +222,13 @@ def build_sidebar() -> SimConfig | None:
             "obstructed environments."
         ),
     )
-    rician_k_factor = 5.0
+    rician_k_factor = _DEFAULTS["sb_rician_k_factor"]
     if channel_type == "rician":
         rician_k_factor = st.sidebar.slider(
             "Rician K-factor (dB)",
             0.0,
             15.0,
-            5.0,
+            key="sb_rician_k_factor",
             step=0.5,
             help=(
                 "Ratio of line-of-sight path power to scattered multipath "
@@ -143,7 +244,7 @@ def build_sidebar() -> SimConfig | None:
         "Max user distance from RIS (m)",
         min_value=5.5,
         max_value=25.0,
-        value=15.0,
+        key="sb_d_max_m",
         step=0.5,
         help=(
             "Farthest a user can be placed from the RIS (users are drawn "
@@ -158,7 +259,7 @@ def build_sidebar() -> SimConfig | None:
         "SIC imperfection (epsilon)",
         0.0,
         1.0,
-        0.0,
+        key="sb_sic_epsilon",
         step=0.05,
         help=(
             "Residual interference left over after Successive Interference "
@@ -171,10 +272,14 @@ def build_sidebar() -> SimConfig | None:
             "a cluster is unaffected by epsilon, since it does no cancellation."
         ),
     )
+    cluster_options = sorted({2, n_users})
+    if st.session_state.get("sb_cluster_size") not in cluster_options:
+        st.session_state["sb_cluster_size"] = cluster_options[0]
     cluster_size = st.sidebar.selectbox(
         "NOMA cluster size",
-        [2, n_users],
+        cluster_options,
         format_func=lambda k: f"{k}-user {'pairs' if k == 2 else 'full cluster'}",
+        key="sb_cluster_size",
         help=(
             "How many users are grouped together into one NOMA superposition "
             "cluster. **2-user pairs**: users are grouped into pairs (simpler "
@@ -191,6 +296,7 @@ def build_sidebar() -> SimConfig | None:
             "Modulation (for BER)",
             ["bpsk", "qpsk"],
             format_func=str.upper,
+            key="sb_modulation",
             help=(
                 "Modulation scheme used only for the analytic BER calculation. "
                 "**BPSK**: 1 bit/symbol, more robust to noise, lower BER at a "
@@ -203,7 +309,7 @@ def build_sidebar() -> SimConfig | None:
             "Outage rate threshold (bps/Hz)",
             0.1,
             2.0,
-            0.5,
+            key="sb_outage_threshold",
             step=0.1,
             help=(
                 "A user is counted as in outage if its instantaneous rate "
@@ -218,7 +324,7 @@ def build_sidebar() -> SimConfig | None:
             "Live Monte-Carlo trials",
             20,
             300,
-            100,
+            key="sb_live_n_trials",
             step=10,
             help=(
                 "Number of independent channel realizations averaged for the "
@@ -232,7 +338,7 @@ def build_sidebar() -> SimConfig | None:
             "Random seed",
             min_value=0,
             max_value=10_000,
-            value=42,
+            key="sb_seed",
             step=1,
             help=(
                 "Seed for the random number generator that drives channel "
@@ -245,7 +351,7 @@ def build_sidebar() -> SimConfig | None:
         )
 
     try:
-        return SimConfig(
+        config = SimConfig(
             n_ris=n_ris, n_users=n_users, snr_db=snr_db, ris_bits=ris_bits,
             ris_algo=ris_algo, power_algo=power_algo, channel_type=channel_type,
             rician_k_factor=rician_k_factor, cluster_size=cluster_size,
@@ -255,3 +361,15 @@ def build_sidebar() -> SimConfig | None:
     except ValueError as exc:
         st.sidebar.error(f"Invalid configuration: {exc}")
         return None
+
+    with st.sidebar.expander("Save config"):
+        st.download_button(
+            "Save current config (JSON)",
+            data=json.dumps(asdict(config), indent=2),
+            file_name="ris_noma_config.json",
+            mime="application/json",
+            key="sb_config_download",
+            use_container_width=True,
+        )
+
+    return config
