@@ -1,5 +1,5 @@
-"""Live Simulation tab: recomputes on every parameter change, cached by the
-full frozen SimConfig. See PLAN.md Section 12."""
+"""Live Simulation tab: recomputes only when the user presses Run, cached by
+the full frozen SimConfig. See PLAN.md Section 12."""
 
 from __future__ import annotations
 
@@ -10,16 +10,15 @@ from ris_noma_sim.core.config import SimConfig
 from ris_noma_sim.dashboard.components.topology_plot import render_topology_figure
 from ris_noma_sim.network.controller import BatchResult, NetworkController
 
+_RESULT_KEY = "live_tab_result"
+_TOPOLOGY_KEY = "live_tab_topology"
+_CONFIG_KEY = "live_tab_config"
+
 
 @st.cache_data(show_spinner="Running Monte-Carlo simulation...")
 def _run_batch(config: SimConfig) -> BatchResult:
     controller = NetworkController(config, np.random.default_rng(config.seed))
-    result = controller.simulate_batch()
-    # topology isn't picklable-stable across cache reruns trivially; regenerate
-    # deterministically for display using the same seed (topology generation
-    # consumes the same rng draws as the controller did internally, but a
-    # fresh controller with the same seed reproduces the identical topology).
-    return result
+    return controller.simulate_batch()
 
 
 @st.cache_data(show_spinner=False)
@@ -33,8 +32,34 @@ def render_live_tab(config: SimConfig | None) -> None:
         st.warning("Fix the configuration errors in the sidebar to run the simulation.")
         return
 
-    result = _run_batch(config)
-    topology = _get_topology(config)
+    run_col, status_col = st.columns([1, 4])
+    with run_col:
+        run_clicked = st.button(
+            "Run Simulation",
+            type="primary",
+            use_container_width=True,
+            help="Runs the Monte-Carlo simulation for the current sidebar configuration.",
+        )
+
+    if run_clicked:
+        st.session_state[_RESULT_KEY] = _run_batch(config)
+        st.session_state[_TOPOLOGY_KEY] = _get_topology(config)
+        st.session_state[_CONFIG_KEY] = config
+
+    result: BatchResult | None = st.session_state.get(_RESULT_KEY)
+    topology = st.session_state.get(_TOPOLOGY_KEY)
+    last_config: SimConfig | None = st.session_state.get(_CONFIG_KEY)
+
+    with status_col:
+        if result is None:
+            st.info("Configure parameters in the sidebar, then press **Run Simulation**.")
+        elif last_config != config:
+            st.warning("Sidebar configuration has changed. Press **Run Simulation** to update the results below.")
+        else:
+            st.success("Results below reflect the current configuration.")
+
+    if result is None or topology is None:
+        return
 
     col_topo, col_metrics = st.columns([1, 1.4])
 
@@ -42,7 +67,7 @@ def render_live_tab(config: SimConfig | None) -> None:
         st.pyplot(render_topology_figure(topology), clear_figure=True)
 
     with col_metrics:
-        n = config.n_trials
+        n = last_config.n_trials
         st.metric(f"Sum-rate (n_trials={n}, live)", f"{result.sum_rate_bps_hz:.4f} bps/Hz")
         m1, m2, m3 = st.columns(3)
         m1.metric("Jain Fairness", f"{result.jain_fairness_index:.3f}")
@@ -62,7 +87,7 @@ def render_live_tab(config: SimConfig | None) -> None:
     import matplotlib.pyplot as plt
 
     fig, ax = plt.subplots(figsize=(8, 3))
-    users = [f"U{i+1}" for i in range(config.n_users)]
+    users = [f"U{i+1}" for i in range(last_config.n_users)]
     ax.bar(users, result.avg_per_user_rate_bps_hz, color="#1f77b4")
     ax.set_ylabel("Rate (bps/Hz)")
     ax.set_title(f"Average Per-User Rate (n_trials={n})")
