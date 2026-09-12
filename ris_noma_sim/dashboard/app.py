@@ -28,9 +28,10 @@ st.markdown(
         background-color: #FF4B4B;
         border-radius: 6px;
     }
-    [data-testid="stExpandSidebarButton"] svg {
-        color: white;
-        fill: white;
+    [data-testid="stExpandSidebarButton"] svg,
+    [data-testid="stExpandSidebarButton"] svg path {
+        color: white !important;
+        fill: white !important;
     }
     [data-testid="stExpandSidebarButton"]:hover {
         background-color: #E03C3C;
