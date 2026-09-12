@@ -1,2 +1,14 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ris_noma_sim"
+version = "0.1.0"
+requires-python = ">=3.11"
+
+[tool.setuptools.packages.find]
+include = ["ris_noma_sim*"]
+
 [tool.pytest.ini_options]
 testpaths = ["ris_noma_sim/tests"]
